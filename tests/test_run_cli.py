@@ -11,6 +11,7 @@ import typer
 from typer.testing import CliRunner
 
 import agent_sandbox.cli as cli
+from agent_sandbox.aws import AwsRuntimeCreds
 from agent_sandbox.cli import app
 
 runner = CliRunner()
@@ -136,9 +137,7 @@ def test_run_no_command_at_all_exits_2(captured: dict[str, object]) -> None:
 # --- --aws-profile injection ----------------------------------------------
 
 
-def _fake_creds(*_args: object, **_kwargs: object) -> object:
-    from agent_sandbox.aws import AwsRuntimeCreds
-
+def _fake_creds(*_args: object, **_kwargs: object) -> AwsRuntimeCreds:
     return AwsRuntimeCreds(access_key_id="AKIA", secret_access_key="secret", session_token="token")
 
 
