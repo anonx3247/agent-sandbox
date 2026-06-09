@@ -47,9 +47,7 @@ def test_mmo_profile_is_not_present() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_git_substitutes_root_sentinels_to_real_paths(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_resolve_git_substitutes_root_sentinels_to_real_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """resolve_profile('git') replaces the git root sentinels with real paths and
     leaves no sentinels behind anywhere in the filesystem section."""
     (tmp_path / ".git").mkdir()
@@ -153,6 +151,48 @@ def test_dotenv_example_allow_survives_dotenv_deny(monkeypatch: pytest.MonkeyPat
     assert "**/.env.example" in fs["allowRead"]
     assert "**/.env" in fs["denyRead"]
     assert "**/.env.*" in fs["denyRead"]
+
+
+def test_extra_allow_read_carves_path_past_dotenv_deny(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """resolve_profile(..., extra_allow_read=...) forces a path into allowRead even
+    though ``**/.env`` is denied — survives deny-wins because it is applied after."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    secret = tmp_path / "some" / "dir" / ".env"
+
+    fs = sandbox.resolve_profile("git", extra_allow_read=(str(secret),))["filesystem"]
+    assert str(secret) in fs["allowRead"]
+    assert "**/.env" in fs["denyRead"]  # broad dotenv deny untouched
+
+
+def test_extra_allow_read_empty_is_noop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert sandbox.resolve_profile("git") == sandbox.resolve_profile("git", extra_allow_read=())
+
+
+def test_sandboxed_field_extra_allow_read_reaches_resolve(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The Sandboxed.extra_allow_read field is threaded into resolve_profile."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    secret = str(tmp_path / "app" / ".env")
+    captured: dict[str, object] = {}
+    real_resolve = sandbox.resolve_profile
+
+    def spy(name=None, extra_allow_read=()):  # type: ignore[no-untyped-def]
+        captured["extra_allow_read"] = extra_allow_read
+        return real_resolve(name, extra_allow_read=extra_allow_read)
+
+    monkeypatch.setattr(sandbox, "resolve_profile", spy)
+    monkeypatch.setattr(shutil, "which", lambda _: None)  # passthrough, no real srt
+    monkeypatch.setattr(
+        sandbox.subprocess,
+        "run",
+        lambda *a, **k: sandbox.subprocess.CompletedProcess(a, 0, "", ""),
+    )
+
+    sandbox.Sandboxed(["echo", "hi"], profile="git", extra_allow_read=(secret,)).run()
+    assert captured["extra_allow_read"] == (secret,)
 
 
 # ---------------------------------------------------------------------------

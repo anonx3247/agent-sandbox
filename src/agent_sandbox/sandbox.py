@@ -1034,6 +1034,28 @@ def _apply_deny_wins(settings: dict) -> dict:
     return result
 
 
+def _carve_extra_allow_read(settings: dict, extra_allow_read: tuple[str, ...]) -> dict:
+    """Return *settings* with *extra_allow_read* paths forced into ``filesystem.allowRead``.
+
+    Applied **after** :func:`_apply_deny_wins`, deliberately: these are explicit,
+    operator-authorized re-allows (e.g. a ``--secrets <file>`` path) that must
+    survive even when the path matches a ``denyRead`` glob like ``**/.env``.
+    srt's last-match-wins then reopens the named path, while every *other*
+    ``.env`` stays denied — deny-wins is exact-match and never sees these
+    post-hoc entries.  Paths are expanded (``~``/``$VAR``/macOS symlink
+    canonicalisation) for parity with base entries and deduplicated.  A no-op
+    for the empty-tuple default, so callers that pass nothing keep current
+    behaviour.  Never mutates the input.
+    """
+    if not extra_allow_read:
+        return settings
+    result = copy.deepcopy(settings)
+    fs = result.setdefault("filesystem", {})
+    expanded = [_expand_path_entry(path) for path in extra_allow_read]
+    fs["allowRead"] = _deduplicate_preserving_order([*fs.get("allowRead", []), *expanded])
+    return result
+
+
 def _maybe_warn_linux_globs(settings: dict) -> None:
     """Emit a one-shot WARNING on Linux when profile denies contain glob patterns.
 
@@ -1173,8 +1195,14 @@ def _deduplicate_profile_lists(settings: dict) -> dict:
     return settings
 
 
-def resolve_profile(name: str | None = None) -> dict:
+def resolve_profile(name: str | None = None, extra_allow_read: tuple[str, ...] = ()) -> dict:
     """Resolve a base profile name to a concrete srt settings dict.
+
+    *extra_allow_read* is an explicit, operator-authorized set of paths
+    force-added to ``filesystem.allowRead`` **after** deny-wins (step 11), so a
+    named secrets file is readable inside the sandbox even though ``**/.env`` is
+    deny-read; every other ``.env`` stays denied.  See
+    :func:`_carve_extra_allow_read`.
 
     Resolution steps:
       1. ``name is None`` → ``"git"`` (the default alias).
@@ -1210,6 +1238,9 @@ def resolve_profile(name: str | None = None) -> dict:
       10. Apply deny-wins conflict resolution — any allow entry that also
          appears in the corresponding deny list is removed from allow
          (trailing-slash normalisation for filesystem paths).
+      11. Force *extra_allow_read* paths into ``allowRead`` after deny-wins, so
+         an explicitly-authorized secrets file is readable even when it matches
+         a ``denyRead`` glob.
 
     Raises:
         SandboxProfileNotFoundError: *name* is not a known base profile.
@@ -1249,6 +1280,7 @@ def resolve_profile(name: str | None = None) -> dict:
         merged = _expand_all_path_entries(merged)
         deduplicated = _deduplicate_profile_lists(merged)
         final = _apply_deny_wins(deduplicated)
+    final = _carve_extra_allow_read(final, extra_allow_read)
     _maybe_warn_linux_globs(final)
     return final
 
@@ -1629,11 +1661,16 @@ class Sandboxed:
             but callers that treat ``Sandboxed`` as a hard enforcement
             boundary (security-sensitive subprocesses, audited pipelines)
             should opt in.
+        extra_allow_read: Explicit, operator-authorized paths force-added to
+            ``filesystem.allowRead`` after deny-wins, so a named secrets file
+            stays readable inside the sandbox even though it matches a
+            ``denyRead`` glob like ``**/.env``.  Defaults to ``()`` (no-op).
     """
 
     cmd: list[str]
     profile: str | None = None
     strict: bool = False
+    extra_allow_read: tuple[str, ...] = ()
 
     def run(self) -> SandboxResult:
         """Execute :attr:`cmd` inside the sandbox described by :attr:`profile`.
@@ -1670,7 +1707,7 @@ class Sandboxed:
                 "strict=False to opt into passthrough mode."
             )
 
-        settings_dict = resolve_profile(self.profile)
+        settings_dict = resolve_profile(self.profile, extra_allow_read=self.extra_allow_read)
 
         if not available:
             logger.warning("srt not found on PATH — running command unsandboxed: %s", self.cmd)
@@ -1771,7 +1808,7 @@ class Sandboxed:
                 "strict=False to opt into passthrough mode."
             )
 
-        settings_dict = resolve_profile(self.profile)
+        settings_dict = resolve_profile(self.profile, extra_allow_read=self.extra_allow_read)
         if not available:
             logger.warning("srt not found on PATH — running command unsandboxed: %s", self.cmd)
 
