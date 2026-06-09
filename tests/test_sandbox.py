@@ -8,6 +8,7 @@ These tests exercise the pure profile-resolution logic and never require the
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -133,12 +134,53 @@ def test_resolve_unknown_name_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 # ---------------------------------------------------------------------------
 
 
+# srt's macOS glob matcher, reimplemented from
+# `@anthropic-ai/sandbox-runtime`'s `globToRegex` so the tests can assert which
+# concrete files a profile's globs actually cover (the sandbox itself can't be
+# applied under nested sandboxing).  `*` becomes ``[^/]*`` (crosses dots, not
+# slashes), ``**/`` becomes ``(.*/)?``, and literal dots are escaped — exactly
+# srt's semantics.
+def _glob_to_regex(glob: str) -> str:
+    out = re.sub(r"[.^$+{}()|\\]", lambda m: "\\" + m.group(), glob)
+    out = re.sub(r"\[([^\]]*?)$", r"\\[\1", out)
+    out = out.replace("**/", "\0SLASH\0").replace("**", "\0STAR\0")
+    out = out.replace("*", "[^/]*").replace("?", "[^/]")
+    out = out.replace("\0SLASH\0", "(.*/)?").replace("\0STAR\0", ".*")
+    return "^" + out + "$"
+
+
+def _glob_matches(globs: list[str], path: str) -> bool:
+    return any(re.match(_glob_to_regex(g), path) is not None for g in globs)
+
+
+# The full set of real-world dotenv shapes the user's repos contain.  Mapped to
+# an absolute path so the srt-glob simulation matches the way srt sees them.
+_ALLOW_TEMPLATES: dict[str, str] = {
+    ".env.example": "/repo/.env.example",
+    "web/.env.local.example": "/repo/web/.env.local.example",
+    ".env.example.local": "/repo/.env.example.local",
+    ".env.example.prod": "/repo/.env.example.prod",
+    "deploy/givetrack.env.example": "/repo/deploy/givetrack.env.example",
+}
+_ENUMERATED_SECRETS: dict[str, str] = {
+    ".env": "/repo/.env",
+    ".env.local": "/repo/.env.local",
+    ".env.development": "/repo/.env.development",
+    ".env.development.local": "/repo/.env.development.local",
+    ".env.production": "/repo/.env.production",
+    ".env.production.local": "/repo/.env.production.local",
+    ".env.staging": "/repo/.env.staging",
+    ".env.test": "/repo/.env.test",
+    ".env.test.local": "/repo/.env.test.local",
+}
+
+
 def test_dotenv_example_allow_survives_dotenv_deny(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The ``**/.env.example`` allowRead carve-out is forced into allowRead and
-    survives resolution even though ``**/.env`` / ``**/.env.*`` stay denied.
+    """The example allowRead carve-out is forced into allowRead and survives
+    resolution even though ``**/.env`` / ``**/.env.*`` stay denied.
 
     ``_apply_deny_wins`` is exact-match, so the carve-out never collides with
-    the broad dotenv deny globs and re-opens ``.env.example`` specifically.
+    the broad dotenv deny globs and re-opens the example templates specifically.
     """
     (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
@@ -146,6 +188,58 @@ def test_dotenv_example_allow_survives_dotenv_deny(monkeypatch: pytest.MonkeyPat
     assert "**/.env.example" in fs["allowRead"]
     assert "**/.env" in fs["denyRead"]
     assert "**/.env.*" in fs["denyRead"]
+
+
+def test_dotenv_example_carveout_covers_every_template(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Every real-world example/template shape is re-opened for READS in the
+    broad-read profiles, while the enumerated secrets stay read-denied and are
+    never re-opened by the carve-out.
+
+    The carve-out is `.env`-anchored on purpose: a broad ``**/*example*`` would
+    also re-open unrelated denied files (e.g. ``~/.ssh/example_key``).  We assert
+    that escape hatch is closed.
+    """
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    for name in ("git", "sealed", "open"):
+        fs = sandbox.resolve_profile(name)["filesystem"]
+        allow = fs["allowRead"]
+        deny = fs["denyRead"]
+        for label, path in _ALLOW_TEMPLATES.items():
+            # Readable: either re-opened by the carve-out, or never denied at all
+            # (e.g. `givetrack.env.example` does not start with `.env`).
+            reopened = _glob_matches(allow, path)
+            denied = _glob_matches(deny, path)
+            assert reopened or not denied, (name, label)
+        # Secrets stay denied and the carve-out must NOT re-open them.
+        for label, path in _ENUMERATED_SECRETS.items():
+            assert _glob_matches(deny, path), (name, label)
+            assert not _glob_matches(allow, path), (name, label)
+        # The classic over-broad mistake stays closed.
+        assert not _glob_matches(allow, "/home/u/.ssh/example_key"), name
+
+
+def test_envrc_never_denied(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`.envrc` (direnv) is readable AND writable in the broad-read profiles: it
+    is not matched by any deny glob and appears in no deny list.
+
+    srt anchors `**/.env` with ``$`` and escapes the literal dot in `**/.env.*`,
+    so neither matches `.envrc` (the ``rc`` runs on with no dot).  We assert both
+    the structural invariant (absent from every deny list) and the glob
+    behaviour (no read/write deny glob matches it).
+    """
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    envrc = "/repo/.envrc"
+    for name in ("git", "sealed", "open"):
+        fs = sandbox.resolve_profile(name)["filesystem"]
+        # Not present verbatim in any deny list...
+        assert "**/.envrc" not in fs["denyRead"], name
+        assert "**/.envrc" not in fs["denyWrite"], name
+        assert ".envrc" not in " ".join(fs["denyRead"] + fs["denyWrite"]), name
+        # ...and no read/write deny glob matches it.
+        assert not _glob_matches(fs["denyRead"], envrc), name
+        assert not _glob_matches(fs["denyWrite"], envrc), name
 
 
 def test_dotenv_read_deny_broad_write_deny_enumerated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
