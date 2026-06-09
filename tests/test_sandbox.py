@@ -368,6 +368,23 @@ def test_sandbox_run_env_forwards_anthropic_and_openai_keys(monkeypatch: pytest.
     assert env["OPENAI_API_KEY"] == "sk-openai-test"
 
 
+def test_sandbox_run_env_forwards_litellm_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LITELLM_API_KEY", "sk-litellm-test")
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://proxy.example.com")
+    env = sandbox.sandbox_run_env(available=False)
+    assert env["LITELLM_API_KEY"] == "sk-litellm-test"
+    assert env["LITELLM_BASE_URL"] == "https://proxy.example.com"
+
+
+def test_git_profile_grants_pi_state_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The git profile grants writes to pi's state dir (~/.pi) so pi can persist sessions."""
+    assert "~/.pi" in sandbox._AGENT_STATE_PATHS
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    allow_write = sandbox.resolve_profile("git")["filesystem"]["allowWrite"]
+    assert any(entry.endswith("/.pi") for entry in allow_write)
+
+
 def test_sandbox_run_env_sets_srt_debug_only_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sandbox.sandbox_run_env(available=True)["SRT_DEBUG"] == "1"
     assert "SRT_DEBUG" not in sandbox.sandbox_run_env(available=False)

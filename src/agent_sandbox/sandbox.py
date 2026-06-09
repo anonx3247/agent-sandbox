@@ -28,9 +28,9 @@ that need to forward stdout line-by-line, or TTY-inherit child stdio)::
 tempfile internally.  Omit it (or pass ``None``) to fall back to the default
 ``"git"`` profile.
 
-When ``srt`` is not on PATH the command runs unsandboxed (passthrough mode),
-a warning is logged, and the returned :class:`SandboxResult` carries the
-child's exit code / output unchanged.  Callers that require strict enforcement
+When ``srt`` is not on PATH the command runs unsandboxed (passthrough mode)
+and the returned :class:`SandboxResult` carries the child's exit code / output
+unchanged.  Callers that require strict enforcement
 should pass ``strict=True`` — :meth:`Sandboxed.run` then raises
 :class:`SandboxUnavailableError` instead of silently passing through.
 :func:`is_sandbox_available` is also available for callers that prefer to
@@ -46,11 +46,11 @@ profile already denies the on-disk counterparts under ``_SECRETS_DENY``; this
 closes the matching env-var channel.  Callers that legitimately need to pass
 additional vars must add them back explicitly.
 
-Every invocation emits a single ``sandbox.audit`` log line carrying the
-resolved cmd, profile, exit code, wall duration, wrapped flag, and a structured
-list of parsed violations.  The line is emitted through the stdlib logger from
-``agent_sandbox.logger``; the structured payload is also attached via
-``extra={"sandbox_audit": ...}`` for handlers that understand it.
+This module performs no logging of its own — it never writes to stdout/stderr
+or any logger.  Everything the caller needs is returned in the
+:class:`SandboxResult` (exit code, cleaned child stdout/stderr, and a
+structured list of parsed violations) so the caller decides what, if anything,
+to surface.
 
 Violation detection is best-effort.  We parse ``[SandboxDebug]`` lines emitted
 by srt (when ``SRT_DEBUG=1`` is set) for network blocks and fall back to EPERM
@@ -96,17 +96,11 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
 from types import TracebackType
 from typing import IO, Any
-
-from agent_sandbox.logger import get_logger
-
-logger = get_logger(__name__)
 
 _UNRESOLVED_RE = re.compile(r"[$~]")
 _SRT_DEBUG_LINE_RE = re.compile(r"^\[SandboxDebug\].*$", re.MULTILINE)
@@ -221,19 +215,18 @@ _LIST_UNION_KEYS: frozenset[tuple[str, str]] = frozenset(
 
 _GLOB_CHARS: frozenset[str] = frozenset({"*", "?", "["})
 
-# Flipped to True after the first Linux-glob warning fires, keeping the
-# signal to one log line per process.  Tests reset this via monkeypatch.
-_LINUX_GLOB_WARNING_EMITTED: bool = False
-
 # Per-user state paths for the AI CLI agents we expect to run inside the
-# sandbox most often (Claude Code, Codex).  Covers the common dotfile
+# sandbox most often (Claude Code, Codex, pi).  Covers the common dotfile
 # location each tool uses by default plus the XDG-style variants and the
 # top-level state files that sit next to those dirs — claude writes project
 # settings / auth / MCP config to
 # ``~/.claude.json`` (with a sibling ``.backup``), which isn't covered by
 # a ``~/.claude`` subpath entry.  Without ``~/.claude.json`` in
 # ``allowWrite``, ``claude`` hangs indefinitely at TUI startup under the
-# ``git`` profile because the config-persist call blocks silently.
+# ``git`` profile because the config-persist call blocks silently.  pi keeps
+# its agent state (sessions, global instructions, config) under ``~/.pi``
+# (e.g. ``~/.pi/agent/sessions/``), so the whole subtree is granted for the
+# same session-persistence reason.
 # ``sealed`` and ``open`` already permit writes to all of ``~`` so these
 # are redundant there — we only wire them into the git-like profiles, whose
 # tight ``allowWrite`` (git root + /tmp) would otherwise block agent session
@@ -246,8 +239,10 @@ _AGENT_STATE_PATHS: tuple[str, ...] = (
     "~/.codex",
     "~/.codex.json",
     "~/.codex.json.backup",
+    "~/.pi",
     "~/.config/claude",
     "~/.config/codex",
+    "~/.config/pi",
     "~/.local/state/claude",
     "~/.local/state/codex",
 )
@@ -555,6 +550,10 @@ _CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset(
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
         "OPENAI_API_KEY",
+        # LiteLLM proxy credentials — forwarded so agents pointed at a LiteLLM
+        # gateway can authenticate and resolve the proxy base URL.
+        "LITELLM_API_KEY",
+        "LITELLM_BASE_URL",
         # Sandbox marker forwarded to claude-hud via the --extra-cmd helper
         # `isara utilities install` writes. Plain string profile name, never
         # a secret; only set by the isara claude/codex run launchers.
@@ -678,8 +677,8 @@ def _parse_violations(
     # fs_eperm fires only when no srt-emitted network_block already explained
     # the failure.  We intentionally do NOT carry the child stderr snippet —
     # it came from the untrusted child and could contain secrets (leaked env
-    # vars, credentials in error paths).  The audit trail keeps `kind` so
-    # callers see "an EPERM happened" without ever serialising that payload.
+    # vars, credentials in error paths).  The returned violation keeps `kind`
+    # so callers see "an EPERM happened" without ever exposing that payload.
     if not any(v.kind == "network_block" for v in out) and _FS_EPERM_RE.search(child_stderr):
         out.append(SandboxViolation(kind="fs_eperm"))
 
@@ -1056,36 +1055,6 @@ def _carve_extra_allow_read(settings: dict, extra_allow_read: tuple[str, ...]) -
     return result
 
 
-def _maybe_warn_linux_globs(settings: dict) -> None:
-    """Emit a one-shot WARNING on Linux when profile denies contain glob patterns.
-
-    srt on macOS expands ``*.pem``/``id_rsa*``/``*.key`` natively via Seatbelt.
-    srt on Linux (bubblewrap) treats those entries as literal filenames, which
-    silently weakens the intended protection — a key file named `actual-key.pem`
-    is *not* matched by a ``*.pem`` deny.  v2 ``LINUX-01`` addresses this at the
-    sandbox layer; for now we surface the gap with a single structlog warning
-    per process so operators notice without spamming every invocation.
-    """
-    global _LINUX_GLOB_WARNING_EMITTED
-    if _LINUX_GLOB_WARNING_EMITTED:
-        return
-    if not sys.platform.startswith("linux"):
-        return
-    fs = settings.get("filesystem", {})
-    has_globs = any(
-        any(c in entry for c in _GLOB_CHARS) for key in ("denyRead", "denyWrite") for entry in fs.get(key, [])
-    )
-    if not has_globs:
-        return
-    logger.warning(
-        "linux_glob_denies_unsupported: srt on Linux treats glob patterns (e.g. id_rsa*, "
-        "*.pem, *.key) as literal filenames. Secrets denies that rely on globs may not "
-        "match as expected. Consider enumerating concrete paths in a "
-        "security_profile.json override."
-    )
-    _LINUX_GLOB_WARNING_EMITTED = True
-
-
 def _expand_path_entry(entry: str) -> str:
     """Expand ``~`` / ``$VAR`` and canonicalise symlinks in a filesystem path.
 
@@ -1281,7 +1250,6 @@ def resolve_profile(name: str | None = None, extra_allow_read: tuple[str, ...] =
         deduplicated = _deduplicate_profile_lists(merged)
         final = _apply_deny_wins(deduplicated)
     final = _carve_extra_allow_read(final, extra_allow_read)
-    _maybe_warn_linux_globs(final)
     return final
 
 
@@ -1293,8 +1261,8 @@ def list_profiles() -> list[str]:
 def wrap_command(cmd: list[str], profile: str) -> list[str]:
     """Return *cmd* prefixed with ``srt --settings <path> --`` when srt is available.
 
-    Pure wrapping helper — no subprocess execution, no audit emission, no stderr
-    capture.  Use this when you need to launch a process under the sandbox but
+    Pure wrapping helper — no subprocess execution, no violation parsing, no
+    stderr capture.  Use this when you need to launch a process under the sandbox but
     manage its lifecycle yourself (e.g. an interactive TUI via
     :class:`subprocess.Popen` with inherited stdio, or a long-lived agent where
     :meth:`Sandboxed.run`'s captured one-shot model doesn't fit).
@@ -1369,59 +1337,14 @@ def sandbox_run_env(available: bool, *, include_srt_debug: bool = True) -> dict[
     return _minimal_child_env(available, include_srt_debug=include_srt_debug)
 
 
-def _emit_audit(
-    cmd: list[str],
-    profile: str | None,
-    exit_code: int,
-    wrapped: bool,
-    duration_ms: float,
-    violations: list[SandboxViolation],
-) -> None:
-    """Emit the single ``sandbox.audit`` structlog event per invocation.
-
-    One event per sandboxed execution — whether any violations were detected
-    or not — gives observability tooling both denominator data (total
-    invocations) and numerator data (jail-break attempts).
-
-    The event carries ``executable`` (``cmd[0]``) and ``argv_len`` only —
-    not the full argv.  Arguments routinely contain user-supplied data we
-    cannot safely sanitise (tokens in URL query strings, Slack paste-ins
-    with API keys, prompt text with PII); the executable name alone is
-    enough to answer "what was sandboxed when" without letting that payload
-    flow into Datadog.  Operators who need to trace a specific incident
-    can inspect the in-memory :class:`SandboxResult` under their own trust
-    assumptions.  ``violations`` entries drop ``detail`` for the same
-    reason — ``fs_eperm`` is the only kind that could carry child-produced
-    bytes and its detail field is already empty by construction.
-
-    The structured fields are folded into a single log message and also
-    attached via ``extra={"sandbox_audit": ...}`` so the stdlib logger stays
-    happy (it rejects arbitrary keyword arguments) while downstream handlers
-    that understand ``LogRecord.sandbox_audit`` can still pick up the
-    structured payload.
-    """
-    audit_fields = {
-        "event_name": "sandbox.audit",
-        "executable": cmd[0] if cmd else "",
-        "argv_len": len(cmd),
-        "profile": profile if profile is not None else _DEFAULT_PROFILE_NAME,
-        "exit_code": exit_code,
-        "wrapped": wrapped,
-        "duration_ms": duration_ms,
-        "violation_count": len(violations),
-        "violations": [{"kind": v.kind, "target": v.target} for v in violations],
-    }
-    logger.info("sandbox.audit %s", audit_fields, extra={"sandbox_audit": audit_fields})
-
-
 class SandboxedPopen:
     """Long-lived sandboxed subprocess — a :class:`subprocess.Popen` wrapper.
 
     Use :meth:`Sandboxed.popen` to construct.  Supports streaming stdout/stderr
     line-by-line from agents that need to ship output incrementally (Slack, UI,
     log forwarders), as well as interactive TTY pass-through by leaving stdio
-    at ``None``.  Tempfile lifecycle and the ``sandbox.audit`` emission are
-    handled on :meth:`wait` or context-manager exit — whichever comes first.
+    at ``None``.  The profile tempfile is cleaned up on :meth:`wait` or
+    context-manager exit — whichever comes first.
 
     Example (streaming stdout)::
 
@@ -1433,7 +1356,7 @@ class SandboxedPopen:
             result = proc.wait()
             if result.sandbox_violations:
                 for v in result.violations:
-                    logger.warning("violation", kind=v.kind, target=v.target)
+                    handle_violation(v.kind, v.target)
 
     Example (interactive TTY)::
 
@@ -1449,21 +1372,11 @@ class SandboxedPopen:
         self,
         proc: subprocess.Popen[str],
         *,
-        cmd: list[str],
-        profile: str | None,
-        wrapped: bool,
         tmp_path: str,
-        started_at: float,
         capture_stderr: bool,
     ) -> None:
         self._proc = proc
-        self._cmd = cmd
-        self._profile = profile
-        self._wrapped = wrapped
         self._tmp_path = tmp_path
-        self._started_at = started_at
-        self._capture_stderr = capture_stderr
-        self._audited = False
         self._result: SandboxResult | None = None
         # Background stderr drainer — started at construction so the OS pipe
         # never fills while the caller is busy reading stdout.  Reading
@@ -1480,7 +1393,7 @@ class SandboxedPopen:
         if capture_stderr and proc.stderr is not None:
             self._stderr_drainer = threading.Thread(
                 target=self._drain_stderr,
-                name="cave-sandbox-stderr-drainer",
+                name="agent-sandbox-stderr-drainer",
                 daemon=True,
             )
             self._stderr_drainer.start()
@@ -1548,23 +1461,22 @@ class SandboxedPopen:
         self._proc.send_signal(sig)
 
     def wait(self, timeout: float | None = None) -> SandboxResult:
-        """Block until the child exits, then emit audit and return :class:`SandboxResult`.
+        """Block until the child exits and return a :class:`SandboxResult`.
 
-        Idempotent — a second call returns the cached result without
-        re-emitting the audit event.  Parses violations from captured stderr
-        when the wrapper was constructed with ``capture_stderr=True``;
-        otherwise :attr:`SandboxResult.violations` is an empty tuple.
+        Idempotent — a second call returns the cached result.  Parses
+        violations from captured stderr when the wrapper was constructed with
+        ``capture_stderr=True``; otherwise :attr:`SandboxResult.violations` is
+        an empty tuple.
 
         Raises:
             subprocess.TimeoutExpired: *timeout* elapsed before the child
-                exited.  The audit event is NOT emitted — call :meth:`wait`
-                again (without a timeout, or with a longer one) to collect.
+                exited — call :meth:`wait` again (without a timeout, or with a
+                longer one) to collect the result.
         """
         if self._result is not None:
             return self._result
 
         self._proc.wait(timeout=timeout)
-        duration_ms = round((time.perf_counter() - self._started_at) * 1000, 2)
 
         if self._stderr_drainer is not None:
             # Child has exited → stderr is closed → drainer will break out
@@ -1577,17 +1489,6 @@ class SandboxedPopen:
             raw_stderr = ""
         child_stderr, srt_lines = _split_srt_stderr(raw_stderr)
         violations = _parse_violations(self._proc.returncode or 0, child_stderr, srt_lines)
-
-        if not self._audited:
-            _emit_audit(
-                cmd=self._cmd,
-                profile=self._profile,
-                exit_code=self._proc.returncode or 0,
-                wrapped=self._wrapped,
-                duration_ms=duration_ms,
-                violations=violations,
-            )
-            self._audited = True
 
         self._result = SandboxResult(
             exit_code=self._proc.returncode or 0,
@@ -1646,7 +1547,7 @@ class Sandboxed:
         ).run()
         if result.sandbox_violations:
             for v in result.violations:
-                logger.warning("sandbox violation", kind=v.kind, target=v.target)
+                handle_violation(v.kind, v.target)
 
     Attributes:
         cmd: The command and its arguments to execute.
@@ -1680,14 +1581,9 @@ class Sandboxed:
         deleted after the child process exits (whether it succeeds, fails, or
         raises).  When ``srt`` is not on ``PATH`` and :attr:`strict` is
         ``False`` (the default) the command runs unsandboxed (passthrough
-        mode) and a warning is logged — the tempfile is still written
-        (harmless) so the wrapping path stays uniform.  With
-        :attr:`strict` = ``True`` the same condition raises
-        :class:`SandboxUnavailableError` before the child is spawned.
-
-        Every invocation emits a single ``sandbox.audit`` structlog event,
-        whether violations were detected or not, so Datadog sees denominator
-        data as well as jail-break attempts.
+        mode) — the tempfile is still written (harmless) so the wrapping path
+        stays uniform.  With :attr:`strict` = ``True`` the same condition
+        raises :class:`SandboxUnavailableError` before the child is spawned.
 
         Returns:
             :class:`SandboxResult` with cleaned child stderr and structured
@@ -1709,35 +1605,20 @@ class Sandboxed:
 
         settings_dict = resolve_profile(self.profile, extra_allow_read=self.extra_allow_read)
 
-        if not available:
-            logger.warning("srt not found on PATH — running command unsandboxed: %s", self.cmd)
-
         tmp_path = _write_profile_tempfile(settings_dict)
         try:
             wrapped_cmd = wrap_command(self.cmd, tmp_path)
-            logger.debug("executing sandboxed command: %s", wrapped_cmd)
-            start = time.perf_counter()
             proc = subprocess.run(
                 wrapped_cmd,
                 capture_output=True,
                 text=True,
                 env=sandbox_run_env(available),
             )
-            duration_ms = round((time.perf_counter() - start) * 1000, 2)
         finally:
             _cleanup_tempfile(tmp_path)
 
         child_stderr, srt_lines = _split_srt_stderr(proc.stderr)
         violations = _parse_violations(proc.returncode, child_stderr, srt_lines)
-
-        _emit_audit(
-            cmd=self.cmd,
-            profile=self.profile,
-            exit_code=proc.returncode,
-            wrapped=available,
-            duration_ms=duration_ms,
-            violations=violations,
-        )
 
         return SandboxResult(
             exit_code=proc.returncode,
@@ -1797,7 +1678,7 @@ class Sandboxed:
         if capture_stderr and "stderr" in popen_kwargs:
             raise ValueError(
                 "capture_stderr=True conflicts with an explicit stderr= kwarg. "
-                "Pick one: capture internally for audit, or handle stderr yourself."
+                "Pick one: capture internally for violation parsing, or handle stderr yourself."
             )
 
         available = is_sandbox_available()
@@ -1809,13 +1690,10 @@ class Sandboxed:
             )
 
         settings_dict = resolve_profile(self.profile, extra_allow_read=self.extra_allow_read)
-        if not available:
-            logger.warning("srt not found on PATH — running command unsandboxed: %s", self.cmd)
 
         tmp_path = _write_profile_tempfile(settings_dict)
         try:
             wrapped_cmd = wrap_command(self.cmd, tmp_path)
-            logger.debug("spawning sandboxed popen: %s", wrapped_cmd)
 
             if capture_stderr:
                 popen_kwargs["stderr"] = subprocess.PIPE
@@ -1845,7 +1723,6 @@ class Sandboxed:
             elif available and include_srt_debug:
                 popen_kwargs["env"] = {**caller_env, "SRT_DEBUG": "1"}
 
-            started_at = time.perf_counter()
             proc = subprocess.Popen(wrapped_cmd, **popen_kwargs)
         except BaseException:
             _cleanup_tempfile(tmp_path)
@@ -1853,10 +1730,6 @@ class Sandboxed:
 
         return SandboxedPopen(
             proc=proc,
-            cmd=self.cmd,
-            profile=self.profile,
-            wrapped=available,
             tmp_path=tmp_path,
-            started_at=started_at,
             capture_stderr=capture_stderr,
         )
