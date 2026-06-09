@@ -31,7 +31,7 @@ asb install
 
 `asb install` provisions everything `asb` needs:
 
-- the `srt` sandbox binary (via npm),
+- the `srt` sandbox binary (via npm, from the Isara-Laboratories fork release),
 - the `sx` / `sxd` secret-broker (via cargo),
 - a default `security_profile.json` in your repo.
 

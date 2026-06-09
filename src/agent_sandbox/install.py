@@ -3,8 +3,9 @@
 
 ``asb install`` is a one-shot, idempotent setup command. It installs:
 
-1. The ``srt`` sandbox-runtime fork (via ``npm install -g`` from a release
-   tarball) that backs every ``asb run`` invocation.
+1. The ``srt`` sandbox-runtime from the Isara-Laboratories fork (via
+   ``npm install -g`` from its GitHub release tarball) that backs every
+   ``asb run`` invocation.
 2. The ``sx``/``sxd`` secret-broker binaries (via ``cargo install --git``), the
    ``sxd`` login auto-start agent (macOS only), and the ``sx`` agent skill.
 3. A default ``security_profile.json`` at the main repo root, written only when
@@ -26,7 +27,12 @@ from pathlib import Path
 
 import typer
 
-_SRT_PACKAGE_SPEC = "@anthropic-ai/sandbox-runtime@0.0.49"
+# Install srt from the Isara-Laboratories fork's GitHub release tarball rather
+# than the public npm registry. v0.0.49 is the only fork tag that publishes an
+# installable .tgz release asset (the package has no build/`prepare` step, so
+# installing from a git ref is unreliable). The tarball still exposes the same
+# `@anthropic-ai/sandbox-runtime` package and `srt` binary.
+_SRT_PACKAGE_SPEC = "https://github.com/Isara-Laboratories/sandbox-runtime/releases/download/v0.0.49/anthropic-ai-sandbox-runtime-0.0.49.tgz"
 
 # Git source for the `sx`/`sxd` secret-broker binaries, installed via
 # `cargo install --git`. `sx` lets agents in short-lived sandboxes use host
@@ -62,9 +68,11 @@ def _run_optional(cmd: list[str], *, ok: str, warn: str, hint: str) -> None:
 
 
 def setup_srt() -> None:
-    """Install the ``srt`` sandbox-runtime from the npm registry.
+    """Install the ``srt`` sandbox-runtime from the Isara-Laboratories fork.
 
-    Runs ``npm install -g @anthropic-ai/sandbox-runtime@<version>``.
+    Runs ``npm install -g <release-tarball-url>`` against the fork's GitHub
+    release tarball, which installs the same ``srt`` binary as the upstream
+    ``@anthropic-ai/sandbox-runtime`` package.
 
     Skips with a warning if npm isn't available. On Linux, also warns about the
     bubblewrap / socat / ripgrep runtime dependencies that ``srt`` needs at
