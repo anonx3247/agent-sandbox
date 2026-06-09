@@ -4,17 +4,13 @@ version = "0.1.0"
 description = "General srt-based sandbox wrapper around any coding agent (claude, codex, pi, ...)"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "typer>=0.12",
-]
+dependencies = ["typer>=0.12"]
 
 [project.scripts]
 asb = "agent_sandbox.cli:app"
 
 [dependency-groups]
-dev = [
-    "pytest>=8",
-]
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["hatchling"]
