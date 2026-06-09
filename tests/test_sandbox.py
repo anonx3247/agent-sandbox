@@ -148,6 +148,58 @@ def test_dotenv_example_allow_survives_dotenv_deny(monkeypatch: pytest.MonkeyPat
     assert "**/.env.*" in fs["denyRead"]
 
 
+def test_dotenv_read_deny_broad_write_deny_enumerated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Reads stay broadly denied (`**/.env`, `**/.env.*`) but writes are an
+    ENUMERATION that omits both the broad `**/.env.*` and `**/.env.example`.
+
+    srt emits write-denies last (last-match-wins beats any write-allow), so
+    `.env.example` can only stay writable by being LEFT OUT of the write-deny
+    list and falling through to the repo-tree `allowWrite` grant.  Reads are the
+    mirror image, so the broad read-deny is safe to keep.
+    """
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    for name in ("git", "sealed", "open"):
+        fs = sandbox.resolve_profile(name)["filesystem"]
+        # Reads: broad deny preserved.
+        assert "**/.env" in fs["denyRead"], name
+        assert "**/.env.*" in fs["denyRead"], name
+        # Writes: enumerated secret names denied...
+        for secret in ("**/.env", "**/.env.local", "**/.env.production", "**/.env.test"):
+            assert secret in fs["denyWrite"], (name, secret)
+        # ...but the broad glob and the example template are NOT write-denied,
+        # so `.env.example` stays writable via the repo-tree grant.
+        assert "**/.env.*" not in fs["denyWrite"], name
+        assert "**/.env.example" not in fs["denyWrite"], name
+
+
+def test_dotenv_example_allow_read_only_for_broad_profiles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`.env.example` read carve-out is present for git/sealed/open, absent for locked."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    for name in ("git", "sealed", "open"):
+        assert "**/.env.example" in sandbox.resolve_profile(name)["filesystem"]["allowRead"], name
+    assert "**/.env.example" not in sandbox.resolve_profile("locked")["filesystem"]["allowRead"]
+
+
+def test_home_dir_secrets_denied_for_read_and_write_all_profiles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Home-dir secrets (`~/.ssh` etc.) stay denied for BOTH read and write in every
+    profile — the dotenv read/write split must not weaken them."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    ssh = str(tmp_path / ".ssh")
+    aws = str(tmp_path / ".aws")
+    for name in ("locked", "sealed", "git", "open"):
+        fs = sandbox.resolve_profile(name)["filesystem"]
+        for secret in (ssh, aws):
+            assert secret in fs["denyRead"], (name, secret)
+            assert secret in fs["denyWrite"], (name, secret)
+
+
 def test_extra_allow_read_carves_path_past_dotenv_deny(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """resolve_profile(..., extra_allow_read=...) forces a path into allowRead even
     though ``**/.env`` is denied — survives deny-wins because it is applied after."""

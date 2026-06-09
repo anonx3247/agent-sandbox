@@ -136,23 +136,52 @@ _SECRETS_DENY: tuple[str, ...] = (
     "~/.pypirc",
     "~/.cargo/credentials.toml",
     "~/.docker/config.json",
-    # Project-local dotenv files anywhere in the tree.  Unlike the home-dir
-    # entries above (absolute subpaths), these are `**/`-rooted globs: srt
-    # expands `**/` natively on macOS — the same proven mechanism as
-    # `_WRITE_ONLY_DENY`'s `**/security_profile.json` — so a `.env` in cwd or
-    # any subdir is blocked regardless of where claude is launched.  Without
-    # these the env-var scrubbing in `_sandbox_env` only stops `.env` *values*
-    # that were sourced into the parent shell; the file on disk stayed fully
-    # readable.  `.env.*` also covers `.env.local` / `.env.staging`.  It catches
-    # `.env.example` too, but that file is the conventional *non-secret* template
-    # (placeholder values, committed to the repo); `_DOTENV_EXAMPLE_ALLOW` carves
-    # it back out of this deny so agents can still read documented config keys.
-    # On Linux these are literals and no-op, consistent with `_WRITE_ONLY_DENY`.
-    "**/.env",
-    "**/.env.*",
 )
 
-# Reads carved back out of the `**/.env.*` deny above.  `.env.example` is the
+# Project-local dotenv files anywhere in the tree, denied for READS.  Unlike the
+# home-dir entries in `_SECRETS_DENY` (absolute subpaths), these are `**/`-rooted
+# globs: srt expands `**/` natively on macOS — the same proven mechanism as
+# `_WRITE_ONLY_DENY`'s `**/security_profile.json` — so a `.env` in cwd or any
+# subdir is blocked regardless of where claude is launched.  Without these the
+# env-var scrubbing in `_sandbox_env` only stops `.env` *values* that were
+# sourced into the parent shell; the file on disk stayed fully readable.  The
+# broad `**/.env.*` covers every secret-bearing variant (`.env.local`,
+# `.env.staging`, plus any novel name) so nothing exfiltratable is ever
+# readable.  `.env.example` is caught here too, but `_DOTENV_EXAMPLE_ALLOW`
+# carves it back out of the read-deny (the conventional non-secret template).
+# On Linux these are literals and no-op, consistent with `_WRITE_ONLY_DENY`.
+_DOTENV_READ_DENY: tuple[str, ...] = ("**/.env", "**/.env.*")
+
+# Project-local dotenv files denied for WRITES.  This is an ENUMERATION, not the
+# broad `**/.env.*` used for reads, and the asymmetry is deliberate.  srt's
+# `generateWriteRules()` emits allow rules FIRST and deny rules AFTER, and
+# Seatbelt is last-match-wins — so a write-deny CANNOT be re-allowed by a later
+# `allowWrite`/`allowRead` carve-out (a `**/.env.example` write-allow would be a
+# silent no-op, beaten by a following `**/.env.*` deny).  Reads are the mirror
+# image: srt emits read-denies first and read-allows last, which is why
+# `_DOTENV_EXAMPLE_ALLOW` works for reads but has no write analogue.  To keep
+# `.env.example` WRITABLE we therefore rely on the repo-tree `allowWrite` grant
+# and simply OMIT `.env.example` from this list — every standard secret-bearing
+# dotenv name is enumerated and stays write-denied, while `.env.example` (and
+# any non-enumerated novel name) falls through to the tree grant and is
+# writable.  Tradeoff: this write-deny is a BLOCKLIST that fails OPEN for a
+# brand-new name like `.env.somethingnovel` (writable) — acceptable because
+# `_DOTENV_READ_DENY` stays broad, so such a file still can't be read back.
+# Names below are the common framework conventions; NEVER add `.env.example`.
+_DOTENV_WRITE_DENY: tuple[str, ...] = (
+    "**/.env",
+    "**/.env.local",
+    "**/.env.development",
+    "**/.env.development.local",
+    "**/.env.production",
+    "**/.env.production.local",
+    "**/.env.staging",
+    "**/.env.staging.local",
+    "**/.env.test",
+    "**/.env.test.local",
+)
+
+# READS carved back out of the broad `_DOTENV_READ_DENY`.  `.env.example` is the
 # conventional non-secret template — placeholder keys with no real credentials,
 # committed alongside the code — so blocking it only frustrates an agent trying
 # to learn which config vars a project expects.  This `**/`-rooted glob is added
@@ -161,10 +190,14 @@ _SECRETS_DENY: tuple[str, ...] = (
 # while `.env`, `.env.local`, `.env.staging`, etc. stay denied (none of them
 # match this glob).  `_apply_deny_wins` is exact-match only, so this never
 # collides with the `**/.env.*` deny entry and survives into the final profile.
-# `locked` is deliberately excluded: its reads are already confined to cwd (broad
-# `~` denyRead plus a `__CWD__` re-allow), so an in-cwd `.env.example` is readable
-# and a global re-allow would punch a hole in that confinement.  On Linux this is
-# a literal and no-ops, consistent with the deny globs.
+# This is a READ-only carve-out: there is NO write analogue, because srt emits
+# write-denies last (last-match-wins would beat any write-allow) — `.env.example`
+# stays writable via the repo-tree `allowWrite` grant plus its omission from
+# `_DOTENV_WRITE_DENY`, not via any entry here.  `locked` is deliberately
+# excluded: its reads are already confined to cwd (broad `~` denyRead plus a
+# `__CWD__` re-allow), so an in-cwd `.env.example` is readable and a global
+# re-allow would punch a hole in that confinement.  On Linux this is a literal
+# and no-ops, consistent with the deny globs.
 _DOTENV_EXAMPLE_ALLOW: tuple[str, ...] = ("**/.env.example",)
 
 # Paths denied for writes only (reads are permitted).  `**/security_profile.json`
@@ -321,8 +354,8 @@ _LOCKED_PROFILE: dict = {
         # ``denyRead: ["~"]`` so pi-lens's per-user cache stays readable.
         "allowRead": [_CWD_SENTINEL, *_PI_LENS_STATE_PATHS],
         "allowWrite": [*_PI_LENS_STATE_PATHS],
-        "denyRead": ["~", *_SECRETS_DENY],
-        "denyWrite": [*_SECRETS_DENY, *_WRITE_ONLY_DENY],
+        "denyRead": ["~", *_SECRETS_DENY, *_DOTENV_READ_DENY],
+        "denyWrite": [*_SECRETS_DENY, *_DOTENV_WRITE_DENY, *_WRITE_ONLY_DENY],
     },
 }
 
@@ -337,8 +370,8 @@ _SEALED_PROFILE: dict = {
         "allowGitConfig": True,
         "allowRead": [*_DOTENV_EXAMPLE_ALLOW],
         "allowWrite": [".", "~", "/tmp", *_PI_LENS_STATE_PATHS],
-        "denyRead": list(_SECRETS_DENY),
-        "denyWrite": [*_SECRETS_DENY, *_WRITE_ONLY_DENY],
+        "denyRead": [*_SECRETS_DENY, *_DOTENV_READ_DENY],
+        "denyWrite": [*_SECRETS_DENY, *_DOTENV_WRITE_DENY, *_WRITE_ONLY_DENY],
     },
 }
 
@@ -378,8 +411,8 @@ _GIT_PROFILE: dict = {
             "~/.config/graphite",
             "~/.local/share/graphite",
         ],
-        "denyRead": list(_SECRETS_DENY),
-        "denyWrite": [*_SECRETS_DENY, *_WRITE_ONLY_DENY],
+        "denyRead": [*_SECRETS_DENY, *_DOTENV_READ_DENY],
+        "denyWrite": [*_SECRETS_DENY, *_DOTENV_WRITE_DENY, *_WRITE_ONLY_DENY],
     },
 }
 
@@ -398,8 +431,8 @@ _OPEN_PROFILE: dict = {
         "allowGitConfig": True,
         "allowRead": [*_DOTENV_EXAMPLE_ALLOW],
         "allowWrite": [".", "~", "/tmp", *_PI_LENS_STATE_PATHS],
-        "denyRead": list(_SECRETS_DENY),
-        "denyWrite": [*_SECRETS_DENY, *_WRITE_ONLY_DENY],
+        "denyRead": [*_SECRETS_DENY, *_DOTENV_READ_DENY],
+        "denyWrite": [*_SECRETS_DENY, *_DOTENV_WRITE_DENY, *_WRITE_ONLY_DENY],
     },
 }
 
