@@ -46,11 +46,7 @@ class DefaultCommandGroup(TyperGroup):
     """
 
     def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
-        if (
-            args
-            and args[0] not in self.commands
-            and args[0] not in self.get_help_option_names(ctx)
-        ):
+        if args and args[0] not in self.commands and args[0] not in self.get_help_option_names(ctx):
             args = [_DEFAULT_COMMAND, *args]
         return super().parse_args(ctx, args)
 
@@ -104,9 +100,7 @@ def run(
     restore_caller_cwd()
 
     if not command:
-        typer.echo(
-            "error: no command given. Usage: asb [flags] -- <command...>", err=True
-        )
+        typer.echo("error: no command given. Usage: asb [flags] -- <command...>", err=True)
         raise typer.Exit(code=2)
 
     # include_srt_debug=False: interactive TTY runs inherit stderr, so srt's

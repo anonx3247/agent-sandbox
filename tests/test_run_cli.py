@@ -44,9 +44,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 # --- restore_caller_cwd ----------------------------------------------------
 
 
-def test_restore_caller_cwd_chdirs_when_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_restore_caller_cwd_chdirs_when_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = tmp_path / "real"
     target.mkdir()
     start = tmp_path / "start"
@@ -59,9 +57,7 @@ def test_restore_caller_cwd_chdirs_when_set(
     assert Path.cwd().resolve() == target.resolve()
 
 
-def test_restore_caller_cwd_noop_when_unset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_restore_caller_cwd_noop_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv(ORIGINAL_CWD_ENV, raising=False)
 
@@ -70,9 +66,7 @@ def test_restore_caller_cwd_noop_when_unset(
     assert Path.cwd().resolve() == tmp_path.resolve()
 
 
-def test_restore_caller_cwd_noop_when_path_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_restore_caller_cwd_noop_when_path_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(ORIGINAL_CWD_ENV, str(tmp_path / "does-not-exist"))
 
@@ -103,9 +97,7 @@ def test_run_defaults_profile_to_git(captured: dict[str, object]) -> None:
     assert captured["profile"] == "git"
 
 
-def test_run_secrets_populates_extra_allow_read(
-    captured: dict[str, object], tmp_path: Path
-) -> None:
+def test_run_secrets_populates_extra_allow_read(captured: dict[str, object], tmp_path: Path) -> None:
     secrets = tmp_path / ".env"
     secrets.write_text("TOKEN=abc\n")
 
@@ -117,9 +109,7 @@ def test_run_secrets_populates_extra_allow_read(
     assert captured["extra_allow_read"] == (str(secrets.resolve()),)
 
 
-def test_run_secrets_missing_file_errors(
-    captured: dict[str, object], tmp_path: Path
-) -> None:
+def test_run_secrets_missing_file_errors(captured: dict[str, object], tmp_path: Path) -> None:
     missing = tmp_path / "nope.env"
 
     result = runner.invoke(app, ["--secrets", str(missing), "--", "pi"])
@@ -128,9 +118,7 @@ def test_run_secrets_missing_file_errors(
     assert captured == {}
 
 
-def test_run_scrubs_llm_auth_vars(
-    captured: dict[str, object], monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_scrubs_llm_auth_vars(captured: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
     # Force sandbox_run_env to leak an LLM auth var so the cli scrub is exercised.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
     monkeypatch.setattr(
