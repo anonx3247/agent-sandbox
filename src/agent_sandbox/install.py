@@ -26,7 +26,7 @@ from pathlib import Path
 
 import typer
 
-_SRT_FORK_SPEC = "https://github.com/Isara-Laboratories/sandbox-runtime/releases/download/v0.0.49/anthropic-ai-sandbox-runtime-0.0.49.tgz"
+_SRT_PACKAGE_SPEC = "@anthropic-ai/sandbox-runtime@0.0.49"
 
 # Git source for the `sx`/`sxd` secret-broker binaries, installed via
 # `cargo install --git`. `sx` lets agents in short-lived sandboxes use host
@@ -62,26 +62,22 @@ def _run_optional(cmd: list[str], *, ok: str, warn: str, hint: str) -> None:
 
 
 def setup_srt() -> None:
-    """Install the ``srt`` sandbox-runtime fork from a published tarball.
+    """Install the ``srt`` sandbox-runtime from the npm registry.
 
-    Runs ``npm install -g <tarball-url>``, so upstream Anthropic installs get
-    swapped for the fork. We install from a GitHub release tarball rather than a
-    ``github:...`` git spec because git-source installs trigger the fork's
-    ``prepare`` script (husky) and have produced partial installs on end-user
-    machines. Tarball installs skip lifecycle scripts and pack cleanly.
+    Runs ``npm install -g @anthropic-ai/sandbox-runtime@<version>``.
 
     Skips with a warning if npm isn't available. On Linux, also warns about the
     bubblewrap / socat / ripgrep runtime dependencies that ``srt`` needs at
     invocation time; on macOS, warns about ripgrep.
     """
-    typer.secho("Installing srt sandbox-runtime fork...", fg=typer.colors.CYAN)
+    typer.secho("Installing srt sandbox-runtime...", fg=typer.colors.CYAN)
 
     if not _has("npm"):
         typer.secho("npm not found, skipping srt installation", fg=typer.colors.YELLOW, err=True)
         typer.echo("To install srt, first install Node.js (includes npm) and re-run: asb install", err=True)
         return
 
-    install_cmd = ["npm", "install", "-g", _SRT_FORK_SPEC]
+    install_cmd = ["npm", "install", "-g", _SRT_PACKAGE_SPEC]
     try:
         _run(install_cmd)
     except subprocess.CalledProcessError as e:

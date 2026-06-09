@@ -298,7 +298,7 @@ _KEYCHAIN_MACH_SERVICES: tuple[str, ...] = ("com.apple.SecurityServer",)
 
 _LOCKED_PROFILE: dict = {
     # Pseudo-terminal access is required for interactive TUI callers
-    # (``isara claude run``, ``isara codex run``) — without it the child's
+    # (interactive TUI agents such as claude or codex) — without it the child's
     # ``tcsetattr`` / ``ioctl`` on the inherited ``/dev/ttys*`` returns
     # EPERM, Node's ``setRawMode`` throws, and claude / codex hang at
     # startup before drawing a single pixel of UI.  The privilege is narrow
@@ -554,9 +554,7 @@ _CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset(
         # gateway can authenticate and resolve the proxy base URL.
         "LITELLM_API_KEY",
         "LITELLM_BASE_URL",
-        # Sandbox marker forwarded to claude-hud via the --extra-cmd helper
-        # `isara utilities install` writes. Plain string profile name, never
-        # a secret; only set by the isara claude/codex run launchers.
+        # Sandbox marker forwarded to claude-hud via the --extra-cmd helper.
         "CLAUDE_HUD_SANDBOX",
     }
 )
@@ -1701,8 +1699,7 @@ class Sandboxed:
             # SRT_DEBUG=1 only adds value when the caller routes stderr
             # somewhere they control — a pipe, a file, ``DEVNULL`` — so srt's
             # ``[SandboxDebug]`` lines can be parsed or stored.  When stderr
-            # inherits the parent TTY (the interactive-TUI case:
-            # ``isara claude run``, ``isara codex run``) those lines dump
+            # inherits the parent TTY those lines dump
             # straight into the user's terminal and garble fullscreen apps
             # at startup.  Auto-gate on that signal instead of adding a
             # separate flag.

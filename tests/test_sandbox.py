@@ -3,10 +3,6 @@
 These tests exercise the pure profile-resolution logic and never require the
 ``srt`` binary on PATH — they call the resolution helpers directly or stub
 ``shutil.which`` where a sandbox-availability branch is involved.
-
-Ported/adapted from Isara's ``cave`` suite
-(``tests/small/test_sandbox_exec.py`` and
-``tests/small/test_sandbox_profiles_integration.py``).
 """
 
 from __future__ import annotations
@@ -37,7 +33,6 @@ def test_list_profiles_returns_sorted_builtin_names() -> None:
 
 
 def test_mmo_profile_is_not_present() -> None:
-    """The isara-specific ``mmo`` profile was intentionally dropped in the port."""
     assert "mmo" not in sandbox._BASE_PROFILES
     assert not hasattr(sandbox, "_MMO_PROFILE")
 

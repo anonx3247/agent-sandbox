@@ -16,7 +16,7 @@ from agent_sandbox import install as install_mod
 from agent_sandbox.cli import app
 from agent_sandbox.install import (
     _DEFAULT_SECURITY_PROFILE,
-    _SRT_FORK_SPEC,
+    _SRT_PACKAGE_SPEC,
     _SX_BINARIES,
     _SX_REPO_SPEC,
     setup_security_profile,
@@ -57,7 +57,7 @@ def test_setup_srt_runs_npm_install(monkeypatch: pytest.MonkeyPatch, record_run:
 
     setup_srt()
 
-    assert record_run == [["npm", "install", "-g", _SRT_FORK_SPEC]]
+    assert record_run == [["npm", "install", "-g", _SRT_PACKAGE_SPEC]]
 
 
 def test_setup_srt_warns_linux_runtime_deps(monkeypatch: pytest.MonkeyPatch, record_run: list[list[str]]) -> None:
@@ -68,7 +68,7 @@ def test_setup_srt_warns_linux_runtime_deps(monkeypatch: pytest.MonkeyPatch, rec
 
     setup_srt()
 
-    assert record_run == [["npm", "install", "-g", _SRT_FORK_SPEC]]
+    assert record_run == [["npm", "install", "-g", _SRT_PACKAGE_SPEC]]
     assert any("bubblewrap" in w for w in warnings)
 
 
