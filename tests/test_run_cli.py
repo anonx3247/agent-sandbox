@@ -11,6 +11,7 @@ import typer
 from typer.testing import CliRunner
 
 import agent_sandbox.cli as cli
+from agent_sandbox.aws import AwsRuntimeCreds
 from agent_sandbox.cli import app
 
 runner = CliRunner()
@@ -18,14 +19,16 @@ runner = CliRunner()
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def _normalize(text: str) -> str:
-    """Strip ANSI styling and collapse all whitespace to single spaces.
+def _strip(text: str) -> str:
+    """Strip ANSI styling and remove all whitespace.
 
     Typer renders ``--help`` through Rich, which boxes output and wraps it to
-    the terminal width — splitting the usage synopsis across lines and weaving
-    in ANSI escapes. Normalizing makes substring assertions width-independent.
+    the terminal width — splitting the usage synopsis across lines (or even
+    mid-token at tiny widths) and weaving in ANSI escapes. Removing whitespace
+    entirely rejoins any wrapped token, so synopsis assertions hold at any CI
+    terminal width regardless of whether ``COLUMNS`` is honored.
     """
-    return " ".join(_ANSI_RE.sub("", text).split())
+    return "".join(_ANSI_RE.sub("", text).split())
 
 
 @pytest.fixture
@@ -133,6 +136,47 @@ def test_run_no_command_at_all_exits_2(captured: dict[str, object]) -> None:
     assert captured == {}
 
 
+# --- --aws-profile injection ----------------------------------------------
+
+
+def _fake_creds(*_args: object, **_kwargs: object) -> AwsRuntimeCreds:
+    return AwsRuntimeCreds(access_key_id="AKIA", secret_access_key="secret", session_token="token")
+
+
+def test_run_aws_profile_overlays_aws_env(captured: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "mint_profile_creds", _fake_creds)
+
+    result = runner.invoke(app, ["--aws-profile", "dev", "--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["AWS_ACCESS_KEY_ID"] == "AKIA"
+    assert child_env["AWS_SECRET_ACCESS_KEY"] == "secret"
+    assert child_env["AWS_SESSION_TOKEN"] == "token"
+    assert child_env["AWS_DEFAULT_REGION"] == child_env["AWS_REGION"] == "us-west-2"
+
+
+def test_run_aws_profile_honours_region(captured: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "mint_profile_creds", _fake_creds)
+
+    result = runner.invoke(app, ["--aws-profile", "dev", "--aws-region", "eu-central-1", "--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["AWS_DEFAULT_REGION"] == child_env["AWS_REGION"] == "eu-central-1"
+
+
+def test_run_without_aws_profile_omits_aws_env(captured: dict[str, object]) -> None:
+    result = runner.invoke(app, ["--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert not any(key.startswith("AWS_") for key in child_env)
+
+
 # --- version subcommand still works ---------------------------------------
 
 
@@ -143,13 +187,10 @@ def test_version_subcommand_still_works() -> None:
 
 
 def test_help_advertises_passthrough_usage() -> None:
-    # Force a wide, plain terminal so Rich doesn't wrap, then normalize away any
-    # residual ANSI/whitespace so the assertion holds at any CI terminal width.
-    result = runner.invoke(
-        app,
-        ["--help"],
-        env={"COLUMNS": "200", "TERM": "dumb", "NO_COLOR": "1"},
-    )
+    # The passthrough synopsis lives on plain (non-boxed) help lines, so removing
+    # all whitespace rejoins any Rich wrapping into a stable ``--<command...>``
+    # token — no dependency on COLUMNS being honored by the CI terminal.
+    result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    assert "-- <command...>" in _normalize(result.output)
+    assert "--<command...>" in _strip(result.output)

@@ -17,6 +17,7 @@ import typer
 from typer.core import TyperGroup
 
 from agent_sandbox import __version__
+from agent_sandbox.aws import build_aws_env, mint_profile_creds
 from agent_sandbox.passthrough import run_sandboxed_binary
 from agent_sandbox.sandbox import is_sandbox_available, sandbox_run_env
 
@@ -87,6 +88,16 @@ def run(
         resolve_path=True,
         help="File to open for READ inside the sandbox (values are NOT injected into env).",
     ),
+    aws_profile: str | None = typer.Option(
+        None,
+        "--aws-profile",
+        help="Mint short-lived STS creds from this SSO profile and overlay them as AWS_* env vars.",
+    ),
+    aws_region: str = typer.Option(
+        "us-west-2",
+        "--aws-region",
+        help="AWS region for the injected AWS_REGION/AWS_DEFAULT_REGION env vars.",
+    ),
     command: list[str] = typer.Argument(
         None,
         metavar="-- <command...>",
@@ -103,6 +114,11 @@ def run(
     child_env = dict(sandbox_run_env(is_sandbox_available(), include_srt_debug=False))
     for leaked in _LLM_AUTH_ENV_VARS:
         child_env.pop(leaked, None)
+
+    # Opt back into AWS access by minting fresh STS creds and overlaying them as
+    # env vars. The sandbox still denies ~/.aws, so the child can never refresh.
+    if aws_profile:
+        child_env.update(build_aws_env(mint_profile_creds(aws_profile), region=aws_region))
 
     extra_allow_read = (str(secrets),) if secrets else ()
     binary, *args = command
