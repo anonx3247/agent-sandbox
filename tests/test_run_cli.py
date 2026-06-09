@@ -1,4 +1,4 @@
-"""Tests for the ``asb`` passthrough run command and cwd restoration."""
+"""Tests for the ``asb`` passthrough run command."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import typer
 from typer.testing import CliRunner
 
 import agent_sandbox.cli as cli
-from agent_sandbox.caller_cwd import ORIGINAL_CWD_ENV, restore_caller_cwd
 from agent_sandbox.cli import app
 
 runner = CliRunner()
@@ -39,40 +38,6 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 
     monkeypatch.setattr(cli, "run_sandboxed_binary", fake_run_sandboxed_binary)
     return record
-
-
-# --- restore_caller_cwd ----------------------------------------------------
-
-
-def test_restore_caller_cwd_chdirs_when_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    target = tmp_path / "real"
-    target.mkdir()
-    start = tmp_path / "start"
-    start.mkdir()
-    monkeypatch.chdir(start)
-    monkeypatch.setenv(ORIGINAL_CWD_ENV, str(target))
-
-    restore_caller_cwd()
-
-    assert Path.cwd().resolve() == target.resolve()
-
-
-def test_restore_caller_cwd_noop_when_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(ORIGINAL_CWD_ENV, raising=False)
-
-    restore_caller_cwd()
-
-    assert Path.cwd().resolve() == tmp_path.resolve()
-
-
-def test_restore_caller_cwd_noop_when_path_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv(ORIGINAL_CWD_ENV, str(tmp_path / "does-not-exist"))
-
-    restore_caller_cwd()
-
-    assert Path.cwd().resolve() == tmp_path.resolve()
 
 
 # --- run passthrough -------------------------------------------------------

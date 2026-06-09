@@ -17,7 +17,6 @@ import typer
 from typer.core import TyperGroup
 
 from agent_sandbox import __version__
-from agent_sandbox.caller_cwd import restore_caller_cwd
 from agent_sandbox.passthrough import run_sandboxed_binary
 from agent_sandbox.sandbox import is_sandbox_available, sandbox_run_env
 
@@ -45,12 +44,12 @@ class DefaultCommandGroup(TyperGroup):
     explicit subcommand.
     """
 
-    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
+    def parse_args(self, ctx, args: list[str]) -> list[str]:
         if args and args[0] not in self.commands and args[0] not in self.get_help_option_names(ctx):
             args = [_DEFAULT_COMMAND, *args]
         return super().parse_args(ctx, args)
 
-    def collect_usage_pieces(self, ctx: typer.Context) -> list[str]:
+    def collect_usage_pieces(self, ctx) -> list[str]:
         return ["[OPTIONS]", "--", "<command...>"]
 
 
@@ -95,10 +94,6 @@ def run(
     ),
 ) -> None:
     """Run a command inside the srt sandbox: ``asb [flags] -- <command...>``."""
-    # An outer shell wrapper may have `cd`'d elsewhere so `uv run` resolves the
-    # workspace; restore the user's real cwd so the child inherits it.
-    restore_caller_cwd()
-
     if not command:
         typer.echo("error: no command given. Usage: asb [flags] -- <command...>", err=True)
         raise typer.Exit(code=2)
