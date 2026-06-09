@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -134,6 +135,81 @@ def test_run_no_command_at_all_exits_2(captured: dict[str, object]) -> None:
 
     assert result.exit_code == 2
     assert captured == {}
+
+
+# --- ASB_* sandbox-identity env vars --------------------------------------
+
+
+def test_run_emits_sandbox_identity_vars(captured: dict[str, object]) -> None:
+    result = runner.invoke(app, ["-p", "git", "--", "true"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["ASB_SANDBOX"] == "1"
+    assert child_env["ASB_PROFILE"] == "git"
+    assert isinstance(json.loads(child_env["ASB_PROFILE_JSON"]), dict)
+    # Compact JSON: no whitespace after separators.
+    assert " " not in child_env["ASB_PROFILE_JSON"]
+
+
+def test_run_secrets_sets_asb_secrets_file(captured: dict[str, object], tmp_path: Path) -> None:
+    secrets = tmp_path / ".env"
+    secrets.write_text("TOKEN=abc\n")
+
+    result = runner.invoke(app, ["--secrets", str(secrets), "--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["ASB_SECRETS_FILE"] == str(secrets.resolve())
+
+
+def test_run_without_secrets_omits_asb_secrets_file(captured: dict[str, object]) -> None:
+    result = runner.invoke(app, ["--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert "ASB_SECRETS_FILE" not in child_env
+
+
+def test_run_aws_profile_sets_asb_aws_profile(captured: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "mint_profile_creds", _fake_creds)
+
+    result = runner.invoke(app, ["--aws-profile", "dev", "--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["ASB_AWS_PROFILE"] == "dev"
+
+
+def test_run_without_aws_profile_omits_asb_aws_profile(captured: dict[str, object]) -> None:
+    result = runner.invoke(app, ["--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert "ASB_AWS_PROFILE" not in child_env
+
+
+def test_run_custom_profile_path_marks_profile_custom(
+    captured: dict[str, object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A ``-p <path>`` profile is not a built-in name, so it classifies as
+    # "custom". resolve_profile only understands base names, so stub it here to
+    # isolate the classification logic under test.
+    monkeypatch.setattr(cli, "resolve_profile", lambda profile, extra_allow_read: {"custom": True})
+    custom = tmp_path / "my-profile.json"
+    custom.write_text("{}\n")
+
+    result = runner.invoke(app, ["-p", str(custom), "--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["ASB_PROFILE"] == "custom"
 
 
 # --- --aws-profile injection ----------------------------------------------

@@ -11,6 +11,7 @@ subcommand prints the package version.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import typer
@@ -20,7 +21,12 @@ from agent_sandbox import __version__
 from agent_sandbox.aws import build_aws_env, mint_profile_creds
 from agent_sandbox.install import install
 from agent_sandbox.passthrough import run_sandboxed_binary
-from agent_sandbox.sandbox import is_sandbox_available, sandbox_run_env
+from agent_sandbox.sandbox import (
+    is_sandbox_available,
+    list_profiles,
+    resolve_profile,
+    sandbox_run_env,
+)
 
 # LLM auth vars the sandbox allowlist would otherwise forward from the parent
 # shell. ``asb`` is a generic wrapper with no credential story of its own, so
@@ -125,6 +131,21 @@ def run(
         child_env.update(build_aws_env(mint_profile_creds(aws_profile), region=aws_region))
 
     extra_allow_read = (str(secrets),) if secrets else ()
+
+    # Emit sandbox-identity vars so tools running inside the sandbox can detect
+    # they're sandboxed, which profile is active, and what it grants. child_env
+    # is passed explicitly to the sandbox, so the allowlist (which only filters
+    # inheritance from os.environ) does not strip these.
+    child_env["ASB_SANDBOX"] = "1"
+    child_env["ASB_PROFILE"] = profile if profile in list_profiles() else "custom"
+    child_env["ASB_PROFILE_JSON"] = json.dumps(
+        resolve_profile(profile, extra_allow_read), separators=(",", ":")
+    )
+    if secrets:
+        child_env["ASB_SECRETS_FILE"] = str(secrets)
+    if aws_profile:
+        child_env["ASB_AWS_PROFILE"] = aws_profile
+
     binary, *args = command
     run_sandboxed_binary(
         binary,
