@@ -233,9 +233,7 @@ def test_envrc_never_denied(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     envrc = "/repo/.envrc"
     for name in ("git", "sealed", "open"):
         fs = sandbox.resolve_profile(name)["filesystem"]
-        # Not present verbatim in any deny list...
-        assert "**/.envrc" not in fs["denyRead"], name
-        assert "**/.envrc" not in fs["denyWrite"], name
+        # `.envrc` appears nowhere in any deny list (read or write)...
         assert ".envrc" not in " ".join(fs["denyRead"] + fs["denyWrite"]), name
         # ...and no read/write deny glob matches it.
         assert not _glob_matches(fs["denyRead"], envrc), name
