@@ -3,7 +3,7 @@
 General Agent Sandboxing with Sane Defaults — `--yolo` without the hassle.
 
 `agent-sandbox` (`asb`) runs **any** coding agent (claude, codex, pi, …) under the
-[`srt`](https://github.com/) binary sandbox. It wraps your agent in a sane-default
+`srt` binary sandbox. It wraps your agent in a sane-default
 filesystem/network sandbox so you can grant broad autonomy without worrying about
 secrets leaking or your home directory getting clobbered.
 
