@@ -147,9 +147,18 @@ _SECRETS_DENY: tuple[str, ...] = (
 # sourced into the parent shell; the file on disk stayed fully readable.  The
 # broad `**/.env.*` covers every secret-bearing variant (`.env.local`,
 # `.env.staging`, plus any novel name) so nothing exfiltratable is ever
-# readable.  `.env.example` is caught here too, but `_DOTENV_EXAMPLE_ALLOW`
-# carves it back out of the read-deny (the conventional non-secret template).
-# On Linux these are literals and no-op, consistent with `_WRITE_ONLY_DENY`.
+# readable.  Example/template variants (`.env.example`, `.env.local.example`,
+# `.env.example.prod`, `givetrack.env.example`, ...) are caught here too, but
+# `_DOTENV_EXAMPLE_ALLOW` carves every `example`-bearing name back out of the
+# read-deny (the conventional non-secret templates).  `.envrc` (direnv) is
+# DELIBERATELY not matched by either glob and is therefore never denied: srt's
+# `globToRegex` escapes the literal dot and anchors with `$`, so `**/.env`
+# (`^(.*/)?\.env$`) needs the name to END at `.env` and `**/.env.*`
+# (`^(.*/)?\.env\.[^/]*$`) needs a literal dot after `.env` — `.envrc` (the `rc`
+# runs straight on, no dot) satisfies neither, so it stays fully readable AND
+# writable (it is also absent from every deny list; see
+# `test_envrc_never_denied`).  On Linux these are literals and no-op,
+# consistent with `_WRITE_ONLY_DENY`.
 _DOTENV_READ_DENY: tuple[str, ...] = ("**/.env", "**/.env.*")
 
 # Project-local dotenv files denied for WRITES.  This is an ENUMERATION, not the
@@ -181,24 +190,42 @@ _DOTENV_WRITE_DENY: tuple[str, ...] = (
     "**/.env.test.local",
 )
 
-# READS carved back out of the broad `_DOTENV_READ_DENY`.  `.env.example` is the
-# conventional non-secret template — placeholder keys with no real credentials,
-# committed alongside the code — so blocking it only frustrates an agent trying
-# to learn which config vars a project expects.  This `**/`-rooted glob is added
-# to `allowRead` in every broad-read profile; srt emits `allowRead` rules after
-# `denyRead`, so Seatbelt's last-match-wins reopens `.env.example` specifically
-# while `.env`, `.env.local`, `.env.staging`, etc. stay denied (none of them
-# match this glob).  `_apply_deny_wins` is exact-match only, so this never
-# collides with the `**/.env.*` deny entry and survives into the final profile.
+# READS carved back out of the broad `_DOTENV_READ_DENY`.  Example/template
+# dotenv files are the conventional non-secret templates — placeholder keys with
+# no real credentials, committed alongside the code — so blocking them only
+# frustrates an agent trying to learn which config vars a project expects.  The
+# rule of thumb: if `example` appears in the dotenv filename it is a template,
+# not a secret.  Rather than one broad `**/*example*` wildcard (which would also
+# re-open unrelated denied files such as `~/.ssh/example_key` — srt's `*` is
+# `[^/]*`, crossing dots freely), we ENUMERATE a small set of `.env`-anchored
+# globs that provably cover every real-world shape while never matching a
+# non-dotenv secret:
+#   `**/.env.example`     → `.env.example`
+#   `**/.env.*.example`   → `.env.local.example`, `web/.env.<env>.example`
+#   `**/.env.example.*`   → `.env.example.local`, `.env.example.prod`
+#   `**/*.env.example`    → `givetrack.env.example` (name does not start `.env`)
+# Each glob is added to `allowRead` in every broad-read profile; srt emits
+# `allowRead` rules AFTER `denyRead` (`getFsReadConfig` maps allowRead →
+# `allowWithinDeny`, emitted last), so Seatbelt's last-match-wins reopens these
+# templates specifically while `.env`, `.env.local`, `.env.production`, etc. stay
+# denied (none of them contain `example`).  None of these globs is the textual
+# twin of any `_DOTENV_READ_DENY`/`_DOTENV_WRITE_DENY` entry, so `_apply_deny_wins`
+# (exact-string match) never drops them and they survive into the final profile.
 # This is a READ-only carve-out: there is NO write analogue, because srt emits
-# write-denies last (last-match-wins would beat any write-allow) — `.env.example`
-# stays writable via the repo-tree `allowWrite` grant plus its omission from
-# `_DOTENV_WRITE_DENY`, not via any entry here.  `locked` is deliberately
-# excluded: its reads are already confined to cwd (broad `~` denyRead plus a
-# `__CWD__` re-allow), so an in-cwd `.env.example` is readable and a global
-# re-allow would punch a hole in that confinement.  On Linux this is a literal
-# and no-ops, consistent with the deny globs.
-_DOTENV_EXAMPLE_ALLOW: tuple[str, ...] = ("**/.env.example",)
+# write-denies last (last-match-wins would beat any write-allow) — these
+# templates stay writable via the repo-tree `allowWrite` grant plus their
+# omission from `_DOTENV_WRITE_DENY` (no enumerated deny glob matches an
+# `example` name), not via any entry here.  `locked` is deliberately excluded:
+# its reads are already confined to cwd (broad `~` denyRead plus a `__CWD__`
+# re-allow), so an in-cwd template is readable and a global re-allow would punch
+# a hole in that confinement.  On Linux these are literals and no-op, consistent
+# with the deny globs.
+_DOTENV_EXAMPLE_ALLOW: tuple[str, ...] = (
+    "**/.env.example",
+    "**/.env.*.example",
+    "**/.env.example.*",
+    "**/*.env.example",
+)
 
 # Paths denied for writes only (reads are permitted).  `**/security_profile.json`
 # is write-denied to prevent a compromised agent from injecting a malicious
@@ -331,8 +358,9 @@ _KEYCHAIN_MACH_SERVICES: tuple[str, ...] = ("com.apple.SecurityServer",)
 #     like ["~"] over a specific denyRead like ["~/.ssh"] reopens the whole home
 #     and the deny is effectively a no-op.
 # We therefore keep allowRead narrow: empty in the broad-read profiles save for
-# the single `_DOTENV_EXAMPLE_ALLOW` carve-out (a deliberate sub-region re-open
-# of `.env.example` out of the `**/.env.*` deny), and in `locked` we deny the
+# the `_DOTENV_EXAMPLE_ALLOW` carve-out (a deliberate sub-region re-open of the
+# `example`-bearing dotenv templates out of the `**/.env.*` deny), and in
+# `locked` we deny the
 # entire $HOME subtree and re-allow cwd via __CWD__ for a genuine "reads confined
 # to cwd for user data" model.  System paths (/etc, /usr, /bin) stay readable
 # because the kernel needs them to exec binaries.
