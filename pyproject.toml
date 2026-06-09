@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["typer>=0.12"]
 
+[project.optional-dependencies]
+aws = ["boto3"]
+
 [project.scripts]
 asb = "agent_sandbox.cli:app"
 
