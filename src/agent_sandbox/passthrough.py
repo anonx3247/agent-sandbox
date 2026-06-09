@@ -39,8 +39,7 @@ def run_sandboxed_binary(
         extra_allow_read=tuple(extra_allow_read),
     )
     try:
-        popen_ctx = sandboxed.popen() if env is None else sandboxed.popen(env=env)
-        with popen_ctx as proc:
+        with sandboxed.popen(env=env) as proc:
             result = proc.wait()
     except SandboxProfileNotFoundError as exc:
         typer.echo(f"error: {exc}", err=True)
