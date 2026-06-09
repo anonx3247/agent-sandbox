@@ -18,6 +18,7 @@ from typer.core import TyperGroup
 
 from agent_sandbox import __version__
 from agent_sandbox.aws import build_aws_env, mint_profile_creds
+from agent_sandbox.install import install
 from agent_sandbox.passthrough import run_sandboxed_binary
 from agent_sandbox.sandbox import is_sandbox_available, sandbox_run_env
 
@@ -69,6 +70,9 @@ app = typer.Typer(
 def version() -> None:
     """Print the agent-sandbox version."""
     typer.echo(__version__)
+
+
+app.command(name="install")(install)
 
 
 @app.command(context_settings={"allow_interspersed_args": False})
