@@ -133,6 +133,49 @@ def test_run_no_command_at_all_exits_2(captured: dict[str, object]) -> None:
     assert captured == {}
 
 
+# --- --aws-profile injection ----------------------------------------------
+
+
+def _fake_creds(*_args: object, **_kwargs: object) -> object:
+    from agent_sandbox.aws import AwsRuntimeCreds
+
+    return AwsRuntimeCreds(access_key_id="AKIA", secret_access_key="secret", session_token="token")
+
+
+def test_run_aws_profile_overlays_aws_env(captured: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "mint_profile_creds", _fake_creds)
+
+    result = runner.invoke(app, ["--aws-profile", "dev", "--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["AWS_ACCESS_KEY_ID"] == "AKIA"
+    assert child_env["AWS_SECRET_ACCESS_KEY"] == "secret"
+    assert child_env["AWS_SESSION_TOKEN"] == "token"
+    assert child_env["AWS_DEFAULT_REGION"] == child_env["AWS_REGION"] == "us-west-2"
+
+
+def test_run_aws_profile_honours_region(captured: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "mint_profile_creds", _fake_creds)
+
+    result = runner.invoke(app, ["--aws-profile", "dev", "--aws-region", "eu-central-1", "--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["AWS_DEFAULT_REGION"] == child_env["AWS_REGION"] == "eu-central-1"
+
+
+def test_run_without_aws_profile_omits_aws_env(captured: dict[str, object]) -> None:
+    result = runner.invoke(app, ["--", "pi"])
+
+    assert result.exit_code == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert not any(key.startswith("AWS_") for key in child_env)
+
+
 # --- version subcommand still works ---------------------------------------
 
 
