@@ -128,14 +128,11 @@ def test_resolve_expands_tilde_in_deny_read(monkeypatch: pytest.MonkeyPatch, tmp
 
 def test_resolve_unknown_name_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(sandbox.SandboxProfileNotFoundError, match=r"Unknown sandbox profile 'strict'"):
+    with pytest.raises(sandbox.SandboxProfileNotFoundError, match=r"Unknown sandbox profile 'strict'") as excinfo:
         sandbox.resolve_profile("strict")
     # Available names are listed so callers can self-correct.
-    try:
-        sandbox.resolve_profile("nope")
-    except sandbox.SandboxProfileNotFoundError as exc:
-        for name in ("git", "locked", "open", "sealed"):
-            assert name in str(exc)
+    for name in ("git", "locked", "open", "sealed"):
+        assert name in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
