@@ -19,14 +19,16 @@ runner = CliRunner()
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def _normalize(text: str) -> str:
-    """Strip ANSI styling and collapse all whitespace to single spaces.
+def _strip(text: str) -> str:
+    """Strip ANSI styling and remove all whitespace.
 
     Typer renders ``--help`` through Rich, which boxes output and wraps it to
-    the terminal width — splitting the usage synopsis across lines and weaving
-    in ANSI escapes. Normalizing makes substring assertions width-independent.
+    the terminal width — splitting the usage synopsis across lines (or even
+    mid-token at tiny widths) and weaving in ANSI escapes. Removing whitespace
+    entirely rejoins any wrapped token, so synopsis assertions hold at any CI
+    terminal width regardless of whether ``COLUMNS`` is honored.
     """
-    return " ".join(_ANSI_RE.sub("", text).split())
+    return "".join(_ANSI_RE.sub("", text).split())
 
 
 @pytest.fixture
@@ -185,13 +187,10 @@ def test_version_subcommand_still_works() -> None:
 
 
 def test_help_advertises_passthrough_usage() -> None:
-    # Force a wide, plain terminal so Rich doesn't wrap, then normalize away any
-    # residual ANSI/whitespace so the assertion holds at any CI terminal width.
-    result = runner.invoke(
-        app,
-        ["--help"],
-        env={"COLUMNS": "200", "TERM": "dumb", "NO_COLOR": "1"},
-    )
+    # The passthrough synopsis lives on plain (non-boxed) help lines, so removing
+    # all whitespace rejoins any Rich wrapping into a stable ``--<command...>``
+    # token — no dependency on COLUMNS being honored by the CI terminal.
+    result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    assert "-- <command...>" in _normalize(result.output)
+    assert "--<command...>" in _strip(result.output)
