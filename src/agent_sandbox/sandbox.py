@@ -249,6 +249,14 @@ _AGENT_STATE_PATHS: tuple[str, ...] = (
 
 _EDITOR_STATE_PATHS: tuple[str, ...] = ("~/.local/state/nvim",)
 
+# pi-lens's per-user LSP / diagnostic cache.  Sandboxed agents must be able to
+# both READ and WRITE this directory, so per an explicit operator request it is
+# wired into the allowWrite list of EVERY base profile — including ``locked``,
+# where it deliberately punches a documented hole in the otherwise strict
+# "reads/writes confined to cwd" confinement (see ``_LOCKED_PROFILE`` below for
+# the matching allowRead carve-out).
+_PI_LENS_STATE_PATHS: tuple[str, ...] = ("~/.pi-lens",)
+
 # Shared per-user cache root for tools used during edit/test/commit loops.
 # Keep this separate from agent state so we do not need one-off cache grants
 # for uv, pre-commit, nvim, and similar tools.
@@ -308,8 +316,11 @@ _LOCKED_PROFILE: dict = {
     "allowPty": True,
     "network": {"allowedDomains": [], "deniedDomains": []},
     "filesystem": {
-        "allowRead": [_CWD_SENTINEL],
-        "allowWrite": [],
+        # ``_PI_LENS_STATE_PATHS`` is a deliberate exception to locked's
+        # "reads confined to cwd" model: it is carved back OUT of the broad
+        # ``denyRead: ["~"]`` so pi-lens's per-user cache stays readable.
+        "allowRead": [_CWD_SENTINEL, *_PI_LENS_STATE_PATHS],
+        "allowWrite": [*_PI_LENS_STATE_PATHS],
         "denyRead": ["~", *_SECRETS_DENY],
         "denyWrite": [*_SECRETS_DENY, *_WRITE_ONLY_DENY],
     },
@@ -325,7 +336,7 @@ _SEALED_PROFILE: dict = {
     "filesystem": {
         "allowGitConfig": True,
         "allowRead": [*_DOTENV_EXAMPLE_ALLOW],
-        "allowWrite": [".", "~", "/tmp"],
+        "allowWrite": [".", "~", "/tmp", *_PI_LENS_STATE_PATHS],
         "denyRead": list(_SECRETS_DENY),
         "denyWrite": [*_SECRETS_DENY, *_WRITE_ONLY_DENY],
     },
@@ -362,6 +373,7 @@ _GIT_PROFILE: dict = {
             *_AGENT_STATE_PATHS,
             *_EDITOR_STATE_PATHS,
             *_SHARED_CACHE_PATHS,
+            *_PI_LENS_STATE_PATHS,
             "~/.config/gh",
             "~/.config/graphite",
             "~/.local/share/graphite",
@@ -385,7 +397,7 @@ _OPEN_PROFILE: dict = {
         # sealed and git-like profiles.
         "allowGitConfig": True,
         "allowRead": [*_DOTENV_EXAMPLE_ALLOW],
-        "allowWrite": [".", "~", "/tmp"],
+        "allowWrite": [".", "~", "/tmp", *_PI_LENS_STATE_PATHS],
         "denyRead": list(_SECRETS_DENY),
         "denyWrite": [*_SECRETS_DENY, *_WRITE_ONLY_DENY],
     },

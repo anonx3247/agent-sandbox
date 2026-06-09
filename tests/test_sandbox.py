@@ -380,6 +380,21 @@ def test_git_profile_grants_pi_state_path(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert any(entry.endswith("/.pi") for entry in allow_write)
 
 
+def test_all_profiles_grant_pi_lens_state_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Every base profile must allow writes to pi-lens's per-user cache (~/.pi-lens),
+    and ``locked`` must additionally carve it back out of its broad ``denyRead: ["~"]``
+    so it stays readable despite home being denied."""
+    assert "~/.pi-lens" in sandbox._PI_LENS_STATE_PATHS
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    for name in ("locked", "sealed", "git", "open"):
+        allow_write = sandbox.resolve_profile(name)["filesystem"]["allowWrite"]
+        assert any(entry.endswith("/.pi-lens") for entry in allow_write), name
+    # locked denies all of ~ for reads, so it needs an explicit allowRead carve-out.
+    locked_read = sandbox.resolve_profile("locked")["filesystem"]["allowRead"]
+    assert any(entry.endswith("/.pi-lens") for entry in locked_read)
+
+
 def test_sandbox_run_env_sets_srt_debug_only_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sandbox.sandbox_run_env(available=True)["SRT_DEBUG"] == "1"
     assert "SRT_DEBUG" not in sandbox.sandbox_run_env(available=False)
