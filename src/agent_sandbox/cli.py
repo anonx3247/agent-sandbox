@@ -103,8 +103,7 @@ def run(
     # workspace; restore the user's real cwd so the child inherits it.
     restore_caller_cwd()
 
-    cmd = list(command) if command else []
-    if not cmd:
+    if not command:
         typer.echo(
             "error: no command given. Usage: asb [flags] -- <command...>", err=True
         )
@@ -117,7 +116,7 @@ def run(
         child_env.pop(leaked, None)
 
     extra_allow_read = (str(secrets),) if secrets else ()
-    binary, *args = cmd
+    binary, *args = command
     run_sandboxed_binary(
         binary,
         profile,
