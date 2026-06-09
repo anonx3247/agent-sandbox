@@ -50,6 +50,17 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
 
 
+def _run_optional(cmd: list[str], *, ok: str, warn: str, hint: str) -> None:
+    """Run *cmd*, warning and continuing (never raising) on failure."""
+    try:
+        _run(cmd)
+    except subprocess.CalledProcessError as e:
+        typer.secho(f"{warn}: {e}", fg=typer.colors.YELLOW, err=True)
+        typer.echo(hint, err=True)
+    else:
+        typer.echo(ok)
+
+
 def setup_srt() -> None:
     """Install the ``srt`` sandbox-runtime fork from a published tarball.
 
@@ -126,23 +137,21 @@ def setup_sx() -> None:
     typer.echo("sx/sxd installed successfully")
 
     if platform.system() == "Darwin":
-        try:
-            _run(["sxd", "install"])
-        except subprocess.CalledProcessError as e:
-            typer.secho(f"Could not register sxd auto-start agent: {e}", fg=typer.colors.YELLOW, err=True)
-            typer.echo("You can register it manually with: sxd install", err=True)
-        else:
-            typer.echo("sxd registered as a login auto-start agent")
+        _run_optional(
+            ["sxd", "install"],
+            ok="sxd registered as a login auto-start agent",
+            warn="Could not register sxd auto-start agent",
+            hint="You can register it manually with: sxd install",
+        )
     else:
         typer.echo("sxd auto-start is macOS-only; start `sxd` manually on this platform")
 
-    try:
-        _run(["sx", "skill", "install"])
-    except subprocess.CalledProcessError as e:
-        typer.secho(f"Could not install sx agent skill: {e}", fg=typer.colors.YELLOW, err=True)
-        typer.echo("You can install it manually with: sx skill install", err=True)
-    else:
-        typer.echo("sx agent skill installed for Claude Code, Codex, and Pi")
+    _run_optional(
+        ["sx", "skill", "install"],
+        ok="sx agent skill installed for Claude Code, Codex, and Pi",
+        warn="Could not install sx agent skill",
+        hint="You can install it manually with: sx skill install",
+    )
 
 
 def _find_main_repo_root() -> Path | None:
